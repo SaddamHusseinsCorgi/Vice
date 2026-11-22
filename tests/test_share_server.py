@@ -1213,6 +1213,42 @@ class TrimKeyframeTests(unittest.IsolatedAsyncioTestCase):
 
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_trims_run_at_low_priority(self) -> None:
+        """A software re-encode must not take the CPU from a running game."""
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = self._long_gop_source(root)
+            cfg = Config()
+            cfg.output.directory = str(root)
+            server = ShareServer(cfg)
+            server._clips["Vice_Clip_1"] = src
+
+            spawned = []
+            real_exec = asyncio.create_subprocess_exec
+
+            async def _recording_exec(*cmd, **kwargs):
+                spawned.append(list(cmd))
+                return await real_exec(*cmd, **kwargs)
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            req.json = mock.AsyncMock(return_value={"start": 2.0, "end": 4.0})
+            with mock.patch.object(share_mod, "_purge_slug_thumbs"), \
+                 mock.patch.object(share_mod, "_purge_slug_proxies"), \
+                 mock.patch.object(share_mod, "_trim_encoder_candidates",
+                                   return_value=["libx264"]), \
+                 mock.patch.object(server, "_broadcast_clip", new=mock.AsyncMock()), \
+                 mock.patch("asyncio.create_subprocess_exec", new=_recording_exec):
+                resp = await server._api_trim(req)
+
+            self.assertTrue(json.loads(resp.text)["ok"], resp.text)
+            trims = [cmd for cmd in spawned if cmd[-2:] == ["-y", str(src.with_suffix(".trimming.mp4"))]]
+            self.assertTrue(any("libx264" in cmd for cmd in trims), "the re-encode has to run")
+            for cmd in trims:
+                self.assertEqual(cmd[:4], ["nice", "-n", "10", "ffmpeg"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
     async def test_trim_between_keyframes_still_yields_a_playable_exact_cut(self) -> None:
         import vice.share as share_mod
         with tempfile.TemporaryDirectory() as tmp:

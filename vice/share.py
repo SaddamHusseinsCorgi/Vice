@@ -2122,6 +2122,9 @@ class ShareServer:
             refuses the file with "unfixable negative timestamp", which is the
             QtWebEngine 6.4 that Ubuntu 24.04 and Pop!_OS ship (#246). The
             output-side -ss 0 drops those packets instead.
+
+            ffmpeg runs at low priority, so a software re-encode does not take
+            the CPU from a game that is still being played.
             """
             if encoder is None:
                 pre, out, drop_lead_in = [], ["-c", "copy"], []
@@ -2129,6 +2132,7 @@ class ShareServer:
                 pre, out = _trim_encoder_args(encoder, bitrate)
                 drop_lead_in = ["-ss", "0"]
             return [
+                "nice", "-n", "10",
                 "ffmpeg", "-hide_banner", "-loglevel", "error", *pre,
                 "-ss", str(start), "-i", str(path), *drop_lead_in,
                 "-t",  str(end - start),
