@@ -1639,6 +1639,19 @@ class TrimEncoderTests(unittest.IsolatedAsyncioTestCase):
         for encoder in ("hevc_nvenc", "hevc_vaapi", "libx265", "libx264", "libsvtav1"):
             self.assertIn("-c:a", share_mod._trim_encoder_args(encoder)[1])
 
+    def test_nvenc_decodes_on_the_card_when_ffmpeg_can(self) -> None:
+        import vice.share as share_mod
+        for encoder in ("h264_nvenc", "hevc_nvenc", "av1_nvenc"):
+            pre, out = share_mod._trim_encoder_args(encoder, None, frozenset({"cuda", "vaapi"}))
+            self.assertEqual(pre, ["-hwaccel", "cuda"], encoder)
+            self.assertEqual(out[:2], ["-c:v", encoder])
+            # A build without cuda decoding stops at -hwaccel cuda, NVENC or not.
+            self.assertEqual(share_mod._trim_encoder_args(encoder, None, frozenset({"vaapi"}))[0],
+                             [], encoder)
+        for encoder in ("libx264", "libx265", "libsvtav1"):
+            self.assertEqual(share_mod._trim_encoder_args(encoder, None, frozenset({"cuda"}))[0],
+                             [], encoder)
+
     def test_an_unknown_bitrate_leaves_the_arguments_as_they_were(self) -> None:
         import vice.share as share_mod
         self.assertEqual(

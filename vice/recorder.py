@@ -1661,6 +1661,20 @@ def _available_encoders() -> set[str]:
         return set()
 
 
+@lru_cache(maxsize=1)
+def _available_hwaccels() -> frozenset[str]:
+    """ffmpeg's hardware decoding methods (cuda, vaapi, ...).
+
+    A build can have NVENC without cuda decoding, and -hwaccel cuda then stops
+    ffmpeg before it reads a frame. An empty set means "could not tell", and
+    callers decode on the CPU as they always have.
+    """
+    code, out = _run_command_capture(["ffmpeg", "-hide_banner", "-hwaccels"], timeout=5.0)
+    if code != 0:
+        return frozenset()
+    return frozenset(line.strip() for line in out.splitlines()[1:] if line.strip())
+
+
 def choose_encoder(preferred: str) -> str:
     """
     Resolve 'auto' or validate a user-specified encoder.

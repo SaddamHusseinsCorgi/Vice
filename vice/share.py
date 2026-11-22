@@ -53,9 +53,9 @@ from .media import communicate_with_timeout, probe_media, probe_media_detailed
 from .playlists import (IMAGE_PREFIX, PlaylistStore, build_tag_index,
                         image_slug)
 from .recorder import (IMAGE_EXTS, KEEP_ALL_STREAMS, _available_encoders,
-                       _is_nvidia, filename_tag, list_display_options,
-                       list_gsr_audio_sources, next_image_path,
-                       slugify_clip_name)
+                       _available_hwaccels, _is_nvidia, filename_tag,
+                       list_display_options, list_gsr_audio_sources,
+                       next_image_path, slugify_clip_name)
 from .config import DISCORD_SIZE_CHOICES
 from .runtime import actual_home_dir, load_user_systemd_env, resolve_path, session_launch_env
 
@@ -526,8 +526,8 @@ def _remember_trim_encoder(vcodec: str, encoder: str) -> None:
         picked.insert(0, encoder)
 
 
-def _trim_encoder_args(encoder: str,
-                       bitrate: Optional[int] = None) -> tuple[list[str], list[str]]:
+def _trim_encoder_args(encoder: str, bitrate: Optional[int] = None,
+                       hwaccels: frozenset[str] = frozenset()) -> tuple[list[str], list[str]]:
     """(arguments before -i, arguments after) for one trim encoder.
 
     Quality is per encoder because the scales are not comparable: x265 at 23
@@ -539,12 +539,17 @@ def _trim_encoder_args(encoder: str,
     known the re-encode is capped at it, so a trim cannot come back larger
     per second than the recording the user tuned (#256). VAAPI's constant QP
     ignores a cap, so it targets the bitrate instead.
+
+    *hwaccels* is what ffmpeg can decode on the GPU (_available_hwaccels).
     """
     cap = ([] if not bitrate else
            ["-maxrate", str(bitrate), "-bufsize", str(bitrate)])
     if encoder.endswith("_nvenc"):
-        return [], ["-c:v", encoder, "-rc", "vbr", "-cq", "22", *cap, "-preset", "p4",
-                    "-c:a", "copy"]
+        # Decode on the card as well, or the CPU decodes every frame. A source
+        # the card cannot decode falls back to software inside ffmpeg.
+        return (["-hwaccel", "cuda"] if "cuda" in hwaccels else [],
+                ["-c:v", encoder, "-rc", "vbr", "-cq", "22", *cap, "-preset", "p4",
+                 "-c:a", "copy"])
     if encoder.endswith("_vaapi"):
         rate = (["-rc_mode", "VBR", "-b:v", str(bitrate), "-maxrate", str(bitrate)]
                 if bitrate else ["-qp", "22"])
@@ -2110,7 +2115,8 @@ class ShareServer:
         faststart = ["-movflags", "+faststart"] if ext == "mp4" else []
         source_codec = (await self._get_meta(slug, path)).get("vcodec", "")
 
-        def _trim_cmd(encoder: Optional[str], bitrate: Optional[int] = None) -> list[str]:
+        def _trim_cmd(encoder: Optional[str], bitrate: Optional[int] = None,
+                      hwaccels: frozenset[str] = frozenset()) -> list[str]:
             """Stream copy when *encoder* is None, otherwise re-encode the video
             with it. Audio is copied either way, so every recorded track
             survives at its original quality.
@@ -2126,7 +2132,7 @@ class ShareServer:
             if encoder is None:
                 pre, out, drop_lead_in = [], ["-c", "copy"], []
             else:
-                pre, out = _trim_encoder_args(encoder, bitrate)
+                pre, out = _trim_encoder_args(encoder, bitrate, hwaccels)
                 drop_lead_in = ["-ss", "0"]
             return [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", *pre,
@@ -2168,8 +2174,9 @@ class ShareServer:
         if problem:
             candidates = await asyncio.to_thread(_trim_encoder_candidates, source_codec)
             bitrate = await _video_bitrate(path)
+            hwaccels = await asyncio.to_thread(_available_hwaccels)
             for encoder in candidates:
-                ok, err = await _run(_trim_cmd(encoder, bitrate), 900)
+                ok, err = await _run(_trim_cmd(encoder, bitrate, hwaccels), 900)
                 if not ok:
                     log.info("Trim of %s with %s failed: %s", path.name, encoder, err)
                     continue

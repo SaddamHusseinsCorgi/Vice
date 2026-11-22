@@ -52,6 +52,7 @@ from vice.recorder import (
     list_display_options,
     list_gsr_audio_sources,
     _wait_for_finalized_clip,
+    _available_hwaccels,
     _encoder_flags,
     _gsr_codec_for_encoder,
     _next_clip_path,
@@ -1367,6 +1368,23 @@ class GSRCodecCapabilityTests(unittest.TestCase):
 
 async def _no_stderr_reader() -> None:
     return None
+
+
+class FfmpegHwaccelTests(unittest.TestCase):
+    """Trims decode on the GPU only when ffmpeg was built to."""
+
+    def setUp(self) -> None:
+        _available_hwaccels.cache_clear()
+        self.addCleanup(_available_hwaccels.cache_clear)
+
+    def test_hwaccels_listing_is_parsed(self) -> None:
+        listing = "Hardware acceleration methods:\nvdpau\ncuda\nvaapi\n\n"
+        with mock.patch("vice.recorder._run_command_capture", return_value=(0, listing)):
+            self.assertEqual(_available_hwaccels(), frozenset({"vdpau", "cuda", "vaapi"}))
+
+    def test_failed_probe_reads_as_no_opinion(self) -> None:
+        with mock.patch("vice.recorder._run_command_capture", return_value=(1, "not found")):
+            self.assertEqual(_available_hwaccels(), frozenset())
 
 
 class GSRStartFallbackTests(unittest.IsolatedAsyncioTestCase):
