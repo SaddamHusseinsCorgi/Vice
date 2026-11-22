@@ -1236,6 +1236,43 @@ class TrimKeyframeTests(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(self._duration(src), 2.0, delta=0.2)
             self.assertGreaterEqual(self._keyframe_count(src), 1)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
+    async def test_both_trim_runs_get_the_length_based_timeout(self) -> None:
+        import vice.share as share_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = self._long_gop_source(root)
+            cfg = Config()
+            cfg.output.directory = str(root)
+            server = ShareServer(cfg)
+            server._clips["Vice_Clip_1"] = src
+
+            timeouts = []
+            real_communicate = share_mod.communicate_with_timeout
+
+            async def _recording_communicate(proc, timeout):
+                timeouts.append(timeout)
+                return await real_communicate(proc, timeout)
+
+            req = mock.MagicMock()
+            req.match_info = {"slug": "Vice_Clip_1"}
+            req.json = mock.AsyncMock(return_value={"start": 2.0, "end": 4.0})
+            with mock.patch.object(share_mod, "_purge_slug_thumbs"), \
+                 mock.patch.object(share_mod, "_purge_slug_proxies"), \
+                 mock.patch.object(share_mod, "_trim_encoder_candidates",
+                                   return_value=["libx264"]), \
+                 mock.patch.object(share_mod, "_trim_timeout", return_value=4321), \
+                 mock.patch.object(share_mod, "communicate_with_timeout",
+                                   new=_recording_communicate), \
+                 mock.patch.object(server, "_broadcast_clip", new=mock.AsyncMock()):
+                resp = await server._api_trim(req)
+
+            self.assertTrue(json.loads(resp.text)["ok"], resp.text)
+            # The copy and the re-encode, and neither of the old flat limits.
+            self.assertEqual(timeouts.count(4321), 2)
+            self.assertNotIn(120, timeouts)
+            self.assertNotIn(900, timeouts)
+
 
 
 @unittest.skipUnless(ShareServer is not None, "aiohttp is not installed")
@@ -1660,6 +1697,11 @@ class TrimEncoderTests(unittest.IsolatedAsyncioTestCase):
         vaapi = share_mod._trim_encoder_args("av1_vaapi", 10_000_000)[1]
         self.assertNotIn("-qp", vaapi)
         self.assertEqual(vaapi[vaapi.index("-b:v") + 1], "10000000")
+
+    def test_a_long_trim_gets_longer_to_re_encode(self) -> None:
+        import vice.share as share_mod
+        self.assertEqual(share_mod._trim_timeout(30.0), 900)
+        self.assertEqual(share_mod._trim_timeout(1200.0), 3600)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed")
     async def test_a_reencoded_trim_drops_the_audio_lead_in_and_keeps_the_bitrate(self) -> None:

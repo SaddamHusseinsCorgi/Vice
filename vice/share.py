@@ -557,6 +557,13 @@ def _trim_encoder_args(encoder: str,
     return [], ["-c:v", encoder, "-preset", "veryfast", "-crf", crf, *cap, "-c:a", "copy"]
 
 
+def _trim_timeout(length: float) -> int:
+    """Seconds one ffmpeg run of a *length* second trim may take. Flat limits
+    killed long trims part way, 15 minutes for a re-encode and 2 for a stream
+    copy of a big recording on a slow disk, so the limit grows with the trim."""
+    return max(900, round(length * 3))
+
+
 def _trimmed_copy_path(path: Path) -> Path:
     """A free name beside *path* for a trimmed copy: "<name>-trim", then
     "<name>-trim-2" and so on."""
@@ -2156,7 +2163,8 @@ class ShareServer:
         # frame the user asked for. Seeking to the previous keyframe instead
         # would play, but it would silently hand back a clip that starts before
         # the chosen in-point (#172).
-        ok, err = await _run(_trim_cmd(None), 120)
+        timeout = _trim_timeout(end - start)
+        ok, err = await _run(_trim_cmd(None), timeout)
         if ok:
             problem = await _trim_result_problem(tmp)
             if problem:
@@ -2169,7 +2177,7 @@ class ShareServer:
             candidates = await asyncio.to_thread(_trim_encoder_candidates, source_codec)
             bitrate = await _video_bitrate(path)
             for encoder in candidates:
-                ok, err = await _run(_trim_cmd(encoder, bitrate), 900)
+                ok, err = await _run(_trim_cmd(encoder, bitrate), timeout)
                 if not ok:
                     log.info("Trim of %s with %s failed: %s", path.name, encoder, err)
                     continue
